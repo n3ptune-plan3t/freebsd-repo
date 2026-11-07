@@ -28,11 +28,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- 1. host pkg config: the ports tree is pinned but dependencies come from "latest"
+# --- 1. ports ref decides the package branch: a quarterly branch name (e.g. 2026Q4)
+#        -> quarterly packages, anything else (commit / empty = HEAD) -> latest.
+#        Build against the same branch your clients install from.
+REF=$(tr -d ' \n' < "$ROOT/PORTS_REF" 2>/dev/null || true)
+case "$REF" in
+  [0-9][0-9][0-9][0-9]Q[1-4]) PKG_BRANCH=quarterly ;;
+  *)                          PKG_BRANCH=latest ;;
+esac
+echo "ports ref: ${REF:-HEAD}  package branch: $PKG_BRANCH"
+
 mkdir -p /usr/local/etc/pkg/repos
-cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'CONF'
+cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<CONF
 FreeBSD-ports: {
-  url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest",
+  url: "pkg+https://pkg.FreeBSD.org/\${ABI}/$PKG_BRANCH",
   mirror_type: "srv",
   signature_type: "fingerprints",
   fingerprints: "/usr/share/keys/pkg",
@@ -45,7 +54,6 @@ pkg update -f
 pkg install -y poudriere git ca_root_nss
 
 # --- 2. ports tree at the pinned ref, plus our overlay
-REF=$(tr -d ' \n' < "$ROOT/PORTS_REF" 2>/dev/null || true)
 if [ ! -d "$PORTSDIR/.git" ]; then
   mkdir -p "$PORTSDIR"
   git -C "$PORTSDIR" init -q
@@ -72,7 +80,7 @@ RESOLV_CONF=/etc/resolv.conf
 DISTFILES_CACHE=$PBASE/distfiles
 USE_TMPFS=no
 ALLOW_MAKE_JOBS=yes
-PACKAGE_FETCH_BRANCH=latest
+PACKAGE_FETCH_BRANCH=$PKG_BRANCH
 CHECK_CHANGED_OPTIONS=verbose
 CHECK_CHANGED_DEPS=yes
 CONF
@@ -94,8 +102,8 @@ if ls "$SEED"/*.pkg >/dev/null 2>&1; then
   echo "seeded $(ls "$SEED"/*.pkg | wc -l | tr -d ' ') package(s)"
 fi
 
-# --- 7. build; dependencies not in ports.list come prebuilt from pkg.FreeBSD.org
-poudriere bulk -j "$JAIL" -p "$TREE" -b latest -f "$ROOT/ports.list"
+# --- 7. build; dependencies not in ports.list come prebuilt from pkg.FreeBSD.org ($PKG_BRANCH)
+poudriere bulk -j "$JAIL" -p "$TREE" -b "$PKG_BRANCH" -f "$ROOT/ports.list"
 
 # --- 8. flat repo layout (matches release-asset URLs) + signature
 rm -rf "$OUT"; mkdir -p "$OUT"

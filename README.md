@@ -22,7 +22,7 @@ here; built packages are published as release assets of `RELEASE_REPO`
 ## How a build works
 
 Poudriere builds each port in a clean jail against the pinned ports tree. Dependencies
-not in `ports.list` are fetched prebuilt from pkg.FreeBSD.org (`latest`); any whose
+not in `ports.list` are fetched prebuilt from pkg.FreeBSD.org (same branch as `PORTS_REF`); any whose
 version differs from the pinned tree are built from source. Previously published
 packages are downloaded first, so unchanged ports are not rebuilt. A weekly scheduled
 run keeps things fresh; the update checker opens an issue when an upstream moves.
@@ -51,3 +51,11 @@ Copy `keys/pkg.pub` to `/usr/local/etc/pkg/keys/n3ptune.pub`, then
 
 As root on a FreeBSD 15 amd64 host: `./build.sh` (output in `./repo`).
 Set `PKG_SIGNING_KEY` to sign, and drop old `.pkg` files in `./seed` to reuse them.
+
+## Quarterly vs latest
+
+FreeBSD installs default to the `quarterly` package set. Packages from this repo link
+against specific dependency versions, so build against the same branch your machines
+use: `PORTS_REF=2026Q4` (quarterly), or a commit / empty (`latest`, and then set the
+client's `FreeBSD-ports` repo to `latest` too). When a new quarter starts, change
+`PORTS_REF` (e.g. `2027Q1`) and rebuild.

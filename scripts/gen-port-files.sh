@@ -17,7 +17,14 @@ while read -r origin; do
   fi
   if [ ! -f "$d/pkg-plist" ]; then
     echo "=== makeplist $origin"
-    make -C "$d" install-missing-packages
+    # Install whatever dependencies exist as binary packages, one by one (a single
+    # missing package would otherwise abort the whole transaction), then let the
+    # ports tree build the rest from source: overlay ports such as moksha-menu and
+    # anything not in the official repo.
+    for dep in $(make -C "$d" missing); do
+      pkg install -y "$dep" >/dev/null 2>&1 || echo "no binary package for $dep, will build from source"
+    done
+    make -C "$d" depends
     make -C "$d" clean stage
     make -C "$d" makeplist | grep -v -e '^===>' -e '^/!\\' > "$d/pkg-plist"
     # moksha's shutdown/reboot/suspend helper must be setuid root
