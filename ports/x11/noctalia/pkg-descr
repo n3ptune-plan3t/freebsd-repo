@@ -1,0 +1,4 @@
+Noctalia is a native C++ and OpenGL ES shell for Wayland compositors (Niri,
+Hyprland, Sway, Scroll, Mango, Labwc, ...): bar, launcher, control center,
+notifications, lock screen, dock, wallpaper and desktop widgets. It does not
+use Qt, GTK or Quickshell.

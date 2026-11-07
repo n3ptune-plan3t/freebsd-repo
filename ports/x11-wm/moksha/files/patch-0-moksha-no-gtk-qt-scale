@@ -1,0 +1,30 @@
+diff --git a/src/modules/conf_theme/e_int_config_scale.c b/src/modules/conf_theme/e_int_config_scale.c
+index a16fbf8cb..94e59f3c1 100644
+--- a/src/modules/conf_theme/e_int_config_scale.c
++++ b/src/modules/conf_theme/e_int_config_scale.c
+@@ -19 +19 @@ struct _E_Config_Dialog_Data
+-   int    xapp_base_dpi, set_xapp_dpi;
++   int    xapp_base_dpi, set_xapp_dpi, no_xapp_scale;
+@@ -209,0 +210 @@ _fill_data(E_Config_Dialog_Data *cfdata)
++   cfdata->no_xapp_scale = !e_config->scale.set_xapp_dpi;
+@@ -292 +293 @@ _adv_create(E_Config_Dialog *cfd __UNUSED__, Evas *evas, E_Config_Dialog_Data *c
+-   Evas_Object *o, *otb, *ow;
++   Evas_Object *o, *otb, *ow, *oc;
+@@ -327,3 +328,5 @@ _adv_create(E_Config_Dialog *cfd __UNUSED__, Evas *evas, E_Config_Dialog_Data *c
+-   ow = e_widget_check_add(evas, _("Set Application DPI"),
+-                           &(cfdata->set_xapp_dpi));
+-   e_widget_list_object_append(o, ow, 1, 1, 0.5);
++   /* when ticked, Moksha leaves Xft.dpi alone so GTK and Qt applications
++    * keep their own size; the base DPI below only matters when unticked */
++   oc = e_widget_check_add(evas, _("Do not Scale GTK and QT"),
++                           &(cfdata->no_xapp_scale));
++   e_widget_list_object_append(o, oc, 1, 1, 0.5);
+@@ -334,0 +338,2 @@ _adv_create(E_Config_Dialog *cfd __UNUSED__, Evas *evas, E_Config_Dialog_Data *c
++   e_widget_check_widget_disable_on_checked_add(oc, ow);
++   e_widget_disabled_set(ow, cfdata->no_xapp_scale);
+@@ -383 +388 @@ _adv_apply(E_Config_Dialog *cfd, E_Config_Dialog_Data *cfdata)
+-   e_config->scale.set_xapp_dpi = cfdata->set_xapp_dpi;
++   e_config->scale.set_xapp_dpi = !cfdata->no_xapp_scale;
+@@ -412 +417 @@ _adv_changed(E_Config_Dialog *cfd __UNUSED__, E_Config_Dialog_Data *cfdata)
+-          (e_config->scale.set_xapp_dpi != cfdata->set_xapp_dpi);
++          (!e_config->scale.set_xapp_dpi != !!cfdata->no_xapp_scale);

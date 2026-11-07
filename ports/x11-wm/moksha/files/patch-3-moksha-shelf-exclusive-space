@@ -1,0 +1,372 @@
+diff --git a/src/bin/e_border.c b/src/bin/e_border.c
+index b4cecf9..0bfad11 100644
+--- a/src/bin/e_border.c
++++ b/src/bin/e_border.c
+@@ -1350,6 +1350,30 @@ _e_border_pending_move_resize_add(E_Border *bd,
+    bd->pending_move_resize = eina_list_append(bd->pending_move_resize, pnd);
+ }
+ 
++static void _e_border_move_resize_internal(E_Border *bd, int x, int y, int w, int h, Eina_Bool without_border, Eina_Bool move);
++
++/* non-zero while e_border_fullscreen() resizes a window: bd->fullscreen is
++ * only set afterwards, so the clamp must be told explicitly */
++static int _e_border_fullscreen_busy = 0;
++
++/* keep windows out of shelves that exclusively reserve their space */
++static Eina_Bool
++_e_border_shelf_exclusive_clamp(E_Border *bd, int *x, int *y, int *w, int *h)
++{
++   Ecore_X_Window_Type t;
++
++   /* fullscreen windows may cover shelves */
++   if ((!bd->zone) || (bd->fullscreen) || (bd->need_fullscreen) ||
++       (_e_border_fullscreen_busy) || (bd->client.netwm.state.fullscreen))
++     return EINA_FALSE;
++   if ((bd->maximized & E_MAXIMIZE_TYPE) == E_MAXIMIZE_FULLSCREEN)
++     return EINA_FALSE;
++   t = bd->client.netwm.type;
++   if ((t == ECORE_X_WINDOW_TYPE_DOCK) || (t == ECORE_X_WINDOW_TYPE_DESKTOP))
++     return EINA_FALSE;
++   return e_zone_shelf_exclusive_clamp(bd->zone, x, y, w, h);
++}
++
+ static void
+ _e_border_move_internal(E_Border *bd,
+                         int x,
+@@ -1396,6 +1420,17 @@ _e_border_move_internal(E_Border *bd,
+         x -= bd->client_inset.l;
+         y -= bd->client_inset.t;
+      }
++   {
++      int cw = bd->w, ch = bd->h;
++
++      if (_e_border_shelf_exclusive_clamp(bd, &x, &y, &cw, &ch) &&
++          ((cw != bd->w) || (ch != bd->h)))
++        {
++           /* too big to sit next to the shelf: shrink as well */
++           _e_border_move_resize_internal(bd, x, y, cw, ch, 0, 1);
++           return;
++        }
++   }
+    if (bd->move_intercept_cb)
+      {
+         int px, py;
+@@ -1588,6 +1623,18 @@ _e_border_move_resize_internal(E_Border *bd,
+         h += (bd->client_inset.t + bd->client_inset.b);
+      }
+ 
++   {
++      int cx = move ? x : bd->x, cy = move ? y : bd->y;
++
++      if (_e_border_shelf_exclusive_clamp(bd, &cx, &cy, &w, &h))
++        {
++           /* a pure resize that must also move the window */
++           if ((!move) && ((cx != bd->x) || (cy != bd->y))) move = 1;
++           x = cx;
++           y = cy;
++        }
++   }
++
+    if ((!move || ((x == bd->x) && (y == bd->y))) &&
+        (w == bd->w) && (h == bd->h))
+      return;
+@@ -3095,6 +3142,7 @@ e_border_fullscreen(E_Border *bd,
+         else if (e_config->mode.presentation)
+           e_border_layer_set(bd, E_LAYER_TOP);
+ 
++        _e_border_fullscreen_busy++;
+         if ((eina_list_count(bd->zone->container->zones) > 1) ||
+             (policy == E_FULLSCREEN_RESIZE) || (!ecore_x_randr_query()))
+           {
+@@ -3151,6 +3199,7 @@ e_border_fullscreen(E_Border *bd,
+              else
+                e_border_move_resize(bd, bd->zone->x, bd->zone->y, bd->zone->w, bd->zone->h);
+           }
++        _e_border_fullscreen_busy--;
+         bd->fullscreen = 1;
+ 
+         e_hints_window_fullscreen_set(bd, 1);
+diff --git a/src/bin/e_config.c b/src/bin/e_config.c
+index 5286876..0eeac2e 100644
+--- a/src/bin/e_config.c
++++ b/src/bin/e_config.c
+@@ -399,6 +399,7 @@ _e_config_edd_init(Eina_Bool old)
+    E_CONFIG_VAL(D, T, size, INT);
+    E_CONFIG_VAL(D, T, icons, INT);
+    E_CONFIG_VAL(D, T, overlap, INT);
++   E_CONFIG_VAL(D, T, exclusive, INT);
+    E_CONFIG_VAL(D, T, autohide, INT);
+    E_CONFIG_VAL(D, T, autohide_show_action, INT);
+    E_CONFIG_VAL(D, T, hide_timeout, FLOAT);
+diff --git a/src/bin/e_config.h b/src/bin/e_config.h
+index 0c6e202..d1e76f6 100644
+--- a/src/bin/e_config.h
++++ b/src/bin/e_config.h
+@@ -599,6 +599,7 @@ struct _E_Config_Shelf
+    int           size;
+    int           icons;
+    int           overlap;
++   int           exclusive; /* reserve the shelf area: no window may overlap it */
+    int           autohide;
+    int           autohide_show_action;
+    float         hide_timeout;
+diff --git a/src/bin/e_int_shelf_config.c b/src/bin/e_int_shelf_config.c
+index c4e02b5..21be5d3 100644
+--- a/src/bin/e_int_shelf_config.c
++++ b/src/bin/e_int_shelf_config.c
+@@ -8,7 +8,7 @@ struct _E_Config_Dialog_Data
+    Evas_Object *o_autohide, *o_desk_list;
+    Eina_List *autohide_list, *desk_list;
+ 
+-   int layer, overlap;
++   int layer, overlap, exclusive;
+    int orient, fit_along;
+    int size, icons;
+    const char *style;
+@@ -93,6 +93,7 @@ _fill_data(E_Config_Dialog_Data *cfdata)
+    else
+      cfdata->layer = 2;
+    cfdata->overlap = cfdata->escfg->overlap;
++   cfdata->exclusive = cfdata->escfg->exclusive;
+ 
+    /* position */
+    cfdata->orient = cfdata->escfg->orient;
+@@ -124,6 +125,7 @@ _basic_check_changed(E_Config_Dialog *cfd __UNUSED__, E_Config_Dialog_Data *cfda
+ {
+ #define CHECK(X) if (cfdata->X != cfdata->escfg->X) return 1
+    CHECK(overlap);
++   CHECK(exclusive);
+    CHECK(orient);
+    CHECK(fit_along);
+    CHECK(size);
+@@ -177,6 +179,9 @@ _basic_create(E_Config_Dialog *cfd __UNUSED__, Evas *evas, E_Config_Dialog_Data
+    ow = e_widget_check_add(evas, _("Allow windows to overlap the shelf"),
+                            &(cfdata->overlap));
+    e_widget_list_object_append(ol, ow, 1, 1, 0.5);
++   ow = e_widget_check_add(evas, _("Reserve Shelf Space on Screen"),
++                           &(cfdata->exclusive));
++   e_widget_list_object_append(ol, ow, 1, 1, 0.5);
+    e_widget_toolbook_page_append(otb, NULL, _("Stacking"), ol,
+                                  1, 0, 1, 0, 0.5, 0.0);
+ 
+@@ -368,6 +373,7 @@ _basic_apply(E_Config_Dialog *cfd, E_Config_Dialog_Data *cfdata)
+      }
+ 
+    cfdata->escfg->overlap = cfdata->overlap;
++   cfdata->escfg->exclusive = cfdata->exclusive;
+    e_shelf_autohide_set(cfdata->es, cfdata->autohide + (cfdata->autohide * cfdata->autohide_show_action));
+    cfdata->escfg->autohide_show_action = cfdata->autohide_show_action;
+    cfdata->escfg->hide_timeout = cfdata->hide_timeout;
+diff --git a/src/bin/e_zone.c b/src/bin/e_zone.c
+index 7f4f2d1..f0f04af 100644
+--- a/src/bin/e_zone.c
++++ b/src/bin/e_zone.c
+@@ -1249,11 +1249,16 @@ _e_zone_useful_geometry_calc(E_Zone *zone)
+ 
+         if (shelf->cfg)
+           {
+-             if (shelf->cfg->overlap)
+-               continue;
++             /* "exclusive" shelves always reserve their space, even when
++              * they autohide or are marked as overlappable */
++             if (!shelf->cfg->exclusive)
++               {
++                  if (shelf->cfg->overlap)
++                    continue;
+ 
+-             if (shelf->cfg->autohide)
+-               continue;
++                  if (shelf->cfg->autohide)
++                    continue;
++               }
+              orient = shelf->cfg->orient;
+ 
+              if (shelf->cfg->desk_show_mode)
+@@ -1322,6 +1327,125 @@ _e_zone_useful_geometry_calc(E_Zone *zone)
+    zone->useful_geometry.dirty = 0;
+ }
+ 
++static Eina_Bool
++_e_zone_shelf_exclusive_active(E_Zone *zone, E_Shelf *shelf)
++{
++   E_Config_Shelf_Desk *sd;
++   Eina_List *l;
++
++   if ((shelf->zone != zone) || (!shelf->cfg) || (!shelf->cfg->exclusive))
++     return EINA_FALSE;
++   if (!shelf->cfg->desk_show_mode) return EINA_TRUE;
++   EINA_LIST_FOREACH(shelf->cfg->desk_list, l, sd)
++     if ((sd) && (sd->x == zone->desk_x_current) &&
++         (sd->y == zone->desk_y_current))
++       return EINA_TRUE;
++   return EINA_FALSE;
++}
++
++/**
++ * Push a window rectangle (zone relative border geometry, absolute
++ * coordinates) out of every shelf that exclusively reserves its space, so
++ * that no window ends up over or under it. The rectangle is also shrunk if
++ * it is too large to fit next to the shelf. Returns EINA_TRUE if it changed.
++ */
++EAPI Eina_Bool
++e_zone_shelf_exclusive_clamp(E_Zone *zone, int *x, int *y, int *w, int *h)
++{
++   Eina_List *shelves;
++   E_Shelf *shelf;
++   Eina_Bool changed = EINA_FALSE;
++
++   if ((!zone) || (!x) || (!y) || (!w) || (!h)) return EINA_FALSE;
++   shelves = e_shelf_list_all();
++   EINA_LIST_FREE(shelves, shelf)
++     {
++        int rx, ry, rw, rh, avail;
++
++        if (!_e_zone_shelf_exclusive_active(zone, shelf)) continue;
++        rx = zone->x + shelf->x;
++        ry = zone->y + shelf->y;
++        rw = shelf->w;
++        rh = shelf->h;
++        if (!E_INTERSECTS(*x, *y, *w, *h, rx, ry, rw, rh)) continue;
++
++        switch (shelf->cfg->orient)
++          {
++           case E_GADCON_ORIENT_TOP:
++           case E_GADCON_ORIENT_CORNER_TL:
++           case E_GADCON_ORIENT_CORNER_TR:
++             avail = zone->h - rh;
++             if (*h > avail) *h = avail;
++             *y = ry + rh;
++             break;
++
++           case E_GADCON_ORIENT_BOTTOM:
++           case E_GADCON_ORIENT_CORNER_BL:
++           case E_GADCON_ORIENT_CORNER_BR:
++             avail = zone->h - rh;
++             if (*h > avail) *h = avail;
++             *y = ry - *h;
++             break;
++
++           case E_GADCON_ORIENT_LEFT:
++           case E_GADCON_ORIENT_CORNER_LT:
++           case E_GADCON_ORIENT_CORNER_LB:
++             avail = zone->w - rw;
++             if (*w > avail) *w = avail;
++             *x = rx + rw;
++             break;
++
++           case E_GADCON_ORIENT_RIGHT:
++           case E_GADCON_ORIENT_CORNER_RT:
++           case E_GADCON_ORIENT_CORNER_RB:
++             avail = zone->w - rw;
++             if (*w > avail) *w = avail;
++             *x = rx - *w;
++             break;
++
++           default:
++             {
++                /* floating shelf: leave by the nearest side */
++                int up = (*y + *h) - ry, down = (ry + rh) - *y;
++                int left = (*x + *w) - rx, right = (rx + rw) - *x;
++                int m = up;
++
++                if (down < m) m = down;
++                if (left < m) m = left;
++                if (right < m) m = right;
++                if (m == up) *y = ry - *h;
++                else if (m == down) *y = ry + rh;
++                else if (m == left) *x = rx - *w;
++                else *x = rx + rw;
++             }
++             break;
++          }
++        changed = EINA_TRUE;
++     }
++   return changed;
++}
++
++/**
++ * Re-apply the exclusive shelf rules to every window of a zone (after the
++ * shelf configuration changed).
++ */
++EAPI void
++e_zone_shelf_exclusive_refit(E_Zone *zone)
++{
++   Eina_List *l;
++   E_Border *bd;
++
++   EINA_LIST_FOREACH(e_border_client_list(), l, bd)
++     {
++        if (bd->zone != zone) continue;
++        /* maximized/fullscreen windows follow the useful geometry; a plain
++         * move_resize would unmaximize them */
++        if ((bd->maximized) || (bd->fullscreen)) continue;
++        /* the clamp runs inside the move/resize calls */
++        e_border_move_resize(bd, bd->x, bd->y, bd->w, bd->h);
++     }
++}
++
+ /**
+  * Get (or calculate) the useful (or free, without any shelves) area.
+  */
+@@ -1359,6 +1483,23 @@ e_zone_useful_geometry_get(E_Zone *zone,
+    if (h) *h = zone->useful_geometry.h;
+ }
+ 
++static Ecore_Job *_exclusive_refit_job = NULL;
++
++static void
++_e_zone_exclusive_refit_job(void *data __UNUSED__)
++{
++   Eina_List *l, *ll, *lz;
++   E_Manager *man;
++   E_Container *con;
++   E_Zone *zone;
++
++   _exclusive_refit_job = NULL;
++   EINA_LIST_FOREACH(e_manager_list(), l, man)
++     EINA_LIST_FOREACH(man->containers, ll, con)
++       EINA_LIST_FOREACH(con->zones, lz, zone)
++         e_zone_shelf_exclusive_refit(zone);
++}
++
+ /**
+  * Mark as dirty so e_zone_useful_geometry_get() will need to recalculate.
+  *
+@@ -1378,6 +1519,24 @@ e_zone_useful_geometry_dirty(E_Zone *zone)
+    ecore_event_add(E_EVENT_ZONE_MOVE_RESIZE, ev, _e_zone_event_move_resize_free, NULL);
+ 
+    zone->useful_geometry.dirty = 1;
++
++   /* A shelf was created, resized or reconfigured: windows that were placed
++    * before its final size was known (e.g. restored at login) must be pushed
++    * out of an exclusive shelf now, not only when next moved. Deferred so it
++    * never runs inside the shelf's own update. */
++   if (!_exclusive_refit_job)
++     {
++        Eina_List *sl, *shelves = e_shelf_list_all();
++        E_Shelf *sh;
++        Eina_Bool any = EINA_FALSE;
++
++        EINA_LIST_FOREACH(shelves, sl, sh)
++          if ((sh->zone == zone) && (sh->cfg) && (sh->cfg->exclusive))
++            any = EINA_TRUE;
++        eina_list_free(shelves);
++        if (any)
++          _exclusive_refit_job = ecore_job_add(_e_zone_exclusive_refit_job, NULL);
++     }
+    zone->useful_geometry.x = -1;
+    zone->useful_geometry.y = -1;
+    zone->useful_geometry.w = -1;
+diff --git a/src/bin/e_zone.h b/src/bin/e_zone.h
+index 9e8a547..d55c145 100644
+--- a/src/bin/e_zone.h
++++ b/src/bin/e_zone.h
+@@ -158,6 +158,8 @@ EAPI void      e_zone_edge_win_layer_set(E_Zone *zone, E_Layer layer);
+ EAPI void      e_zone_border_geometry_refresh(E_Zone *zone);
+ 
+ EAPI void      e_zone_useful_geometry_dirty(E_Zone *zone);
++EAPI Eina_Bool e_zone_shelf_exclusive_clamp(E_Zone *zone, int *x, int *y, int *w, int *h);
++EAPI void      e_zone_shelf_exclusive_refit(E_Zone *zone);
+ EAPI void      e_zone_useful_geometry_get(E_Zone *zone, int *x, int *y, int *w, int *h);
+ 
+ extern EAPI int E_EVENT_ZONE_DESK_COUNT_SET;

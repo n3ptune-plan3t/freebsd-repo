@@ -1,0 +1,7 @@
+repo/
+seed/
+logs/
+updates.json
+updates.md
+body.md
+*.key

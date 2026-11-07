@@ -1,0 +1,72 @@
+name: build-freebsd-amd64
+on:
+  push:
+    branches: [main]
+    paths: ['ports/**', 'ports.list', 'PORTS_REF', 'conf/**', 'scripts/**', '.github/workflows/build.yml']
+  schedule:
+    - cron: '23 4 * * 1'          # weekly rebuild picks up dependency/ABI drift
+  workflow_dispatch:
+    inputs:
+      full_rebuild:
+        description: 'Ignore published packages and rebuild everything'
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-freebsd-amd64
+  cancel-in-progress: false
+
+env:
+  FREEBSD_RELEASE: "15.1"                          # single place to change the VM/jail version
+  RELEASE_REPO: n3ptune-plan3t/freebsd-amd64-pkg   # artifact repo; needs RELEASE_TOKEN secret
+  RELEASE_TAG: FreeBSD-15-amd64                    # named after the pkg ABI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch published packages (build cache)
+        if: ${{ !inputs.full_rebuild }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          mkdir -p seed
+          if gh release view "$RELEASE_TAG" -R "$RELEASE_REPO" >/dev/null 2>&1; then
+            gh release download "$RELEASE_TAG" -R "$RELEASE_REPO" -p '*.pkg' -D seed || true
+          fi
+          ls seed | wc -l
+
+      - name: Build in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        env:
+          PKG_SIGNING_KEY: ${{ secrets.PKG_SIGNING_KEY }}
+        with:
+          release: ${{ env.FREEBSD_RELEASE }}
+          arch: amd64
+          usesh: true
+          envs: 'PKG_SIGNING_KEY'
+          prepare: pkg install -y git ca_root_nss
+          run: sh scripts/build-ports.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generated-port-files
+          path: |
+            ports/**/distinfo
+            ports/**/pkg-plist
+            logs/
+
+      - name: Publish pkg repo
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -eu
+          ls repo/*.pkg >/dev/null
+          gh release view "$RELEASE_TAG" -R "$RELEASE_REPO" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" -R "$RELEASE_REPO" --title "$RELEASE_TAG" \
+              --notes "FreeBSD 15 amd64 pkg repo (ABI FreeBSD:15:amd64)"
+          gh release upload "$RELEASE_TAG" repo/* -R "$RELEASE_REPO" --clobber
+          sh scripts/prune-release.sh

@@ -1,0 +1,44 @@
+name: Check for upstream updates
+
+on:
+  schedule:
+    - cron: '17 5 * * *'      # daily, 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check ports against upstream
+        id: check
+        run: python3 scripts/check-updates.py --json updates.json --markdown updates.md
+
+      - name: Job summary
+        run: cat updates.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNT: ${{ steps.check.outputs.count }}
+        run: |
+          set -eu
+          gh label create upstream-updates --color 0e8a16 \
+            --description "Port is behind upstream" 2>/dev/null || true
+          num=$(gh issue list --label upstream-updates --state open \
+                  --json number --jq '.[0].number // empty')
+          if [ "$COUNT" -gt 0 ]; then
+            if [ -n "$num" ]; then
+              gh issue edit "$num" --body-file updates.md
+            else
+              gh issue create --title "Upstream updates available" \
+                --label upstream-updates --body-file updates.md
+            fi
+          elif [ -n "$num" ]; then
+            gh issue close "$num" --comment "All ports are up to date."
+          fi

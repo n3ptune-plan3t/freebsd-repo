@@ -1,0 +1,7 @@
+Moksha is a fork of the Enlightenment 17 window manager and desktop shell,
+maintained by Bodhi Linux. It is lightweight and highly configurable.
+
+This build adds native touchpad gestures (tpgest, via libinput), the Monocle
+tabbed/stacked layout, graceful close on titlebar middle click, shelves that
+reserve screen space, a desk-flip spring effect, and scaling that does not
+touch GTK/Qt applications.

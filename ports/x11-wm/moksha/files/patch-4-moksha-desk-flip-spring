@@ -1,0 +1,48 @@
+diff --git a/src/bin/e_desk.c b/src/bin/e_desk.c
+index 22577a9d6..a69fbfb26 100644
+--- a/src/bin/e_desk.c
++++ b/src/bin/e_desk.c
+@@ -1,0 +2 @@
++#include <math.h>
+@@ -855,0 +857,15 @@ _e_desk_show_end(E_Desk *desk)
++/* Damped spring in closed form: the fraction of the slide still to go at
++ * progress p (0..1). Slightly under-damped, so arriving windows settle with a
++ * small natural overshoot instead of stopping dead. Pure math, evaluated by
++ * the animator Moksha already runs: no extra timers. */
++static double
++_e_desk_spring_remaining(double p)
++{
++   const double zeta = 0.8;     /* damping ratio: ~1.5% overshoot */
++   const double span = 10.0;    /* natural frequency * duration: settled by p=1 */
++   double k = zeta * span;
++   double wd = span * sqrt(1.0 - (zeta * zeta));
++
++   return exp(-k * p) * (cos(wd * p) + ((k / wd) * sin(wd * p)));
++}
++
+@@ -862 +878,2 @@ _e_desk_show_animator(void *data)
+-   double t, dt, spd;
++   double t, p, rem, spd;
++   Eina_Bool running = EINA_FALSE;
+@@ -874 +890,0 @@ _e_desk_show_animator(void *data)
+-   dt = -1.0;
+@@ -889,4 +905,7 @@ _e_desk_show_animator(void *data)
+-                  dt = (t - bd->fx.start.t) / spd;
+-                  if (dt > 1.0) dt = 1.0;
+-                  dt = 1.0 - dt;
+-                  dt *= dt; /* decelerate - could be a better hack */
++                  p = (spd > 0.0) ? ((t - bd->fx.start.t) / spd) : 1.0;
++                  if (p >= 1.0) rem = 0.0;
++                  else
++                    {
++                       rem = _e_desk_spring_remaining(p);
++                       running = EINA_TRUE;
++                    }
+@@ -894,2 +913,2 @@ _e_desk_show_animator(void *data)
+-                                     ((double)bd->fx.start.x * dt),
+-                                     ((double)bd->fx.start.y * dt));
++                                     ((double)bd->fx.start.x * rem),
++                                     ((double)bd->fx.start.y * rem));
+@@ -900 +919 @@ _e_desk_show_animator(void *data)
+-   if (dt <= 0.0)
++   if (!running)

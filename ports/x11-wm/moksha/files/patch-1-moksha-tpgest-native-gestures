@@ -1,0 +1,1130 @@
+diff --git a/config/bodhi/e.src b/config/bodhi/e.src
+index a5e80fd..ab934bd 100644
+--- a/config/bodhi/e.src
++++ b/config/bodhi/e.src
+@@ -1907,6 +1907,12 @@ group "E_Config" struct {
+             value "delayed" uchar: 1;
+             value "priority" int: 0;
+         }
++        group "E_Config_Module" struct {
++            value "name" string: "tpgest";
++            value "enabled" uchar: 1;
++            value "delayed" uchar: 1;
++            value "priority" int: 0;
++        }
+         group "E_Config_Module" struct {
+             value "name" string: "conf_window_remembers";
+             value "enabled" uchar: 1;
+diff --git a/configure.ac b/configure.ac
+index e4cc1f5..c1a1faa 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -789,6 +789,16 @@ define([CHECK_MODULE_PLACES],
+   fi
+ ])
+ 
++define([CHECK_MODULE_TPGEST],
++[
++  AC_E_CHECK_PKG(TPGEST, [ libinput libudev ], [],
++  [
++  TPGEST=false
++  AC_MSG_NOTICE([Install libinput-dev and libudev-dev to build the tpgest module])])
++  AC_E_CHECK_PKG(TPGEST_LOGIND, [ libsystemd ], [],
++  [AC_MSG_NOTICE([libsystemd not found: tpgest will not pause while another session is active])])
++])
++
+ AC_SUBST(BATTERY_LDFLAGS)
+ AM_CONDITIONAL([HAVE_OPENBSD], [test "x${have_openbsd}" = "xyes"])
+ 
+@@ -923,6 +933,7 @@ AC_E_OPTIONAL_MODULE([xkbswitch], true)
+ AC_E_OPTIONAL_MODULE([tiling], true)
+ AC_E_OPTIONAL_MODULE([access], false)
+ AC_E_OPTIONAL_MODULE([clipboard], true)
++AC_E_OPTIONAL_MODULE([tpgest], true, [CHECK_MODULE_TPGEST])
+ AC_E_OPTIONAL_MODULE([places], true,[CHECK_MODULE_PLACES])
+ AC_E_OPTIONAL_MODULE([classicmenu], true)
+ AC_E_OPTIONAL_MODULE([separator], true)
+@@ -1052,6 +1063,7 @@ src/modules/shot/module.desktop
+ src/modules/backlight/module.desktop
+ src/modules/tasks/module.desktop
+ src/modules/xkbswitch/module.desktop
++src/modules/tpgest/module.desktop
+ src/modules/tiling/module.desktop
+ src/modules/access/module.desktop
+ src/modules/clipboard/module.desktop
+diff --git a/src/bin/e_module.c b/src/bin/e_module.c
+index 0cd3808..9227e3c 100644
+--- a/src/bin/e_module.c
++++ b/src/bin/e_module.c
+@@ -52,6 +52,7 @@
+         "tasks", \
+         "temperature", \
+         "tiling", \
++        "tpgest", \
+         "winlist", \
+         "wizard", \
+         "wl_drm", \
+diff --git a/src/modules/Makefile.am b/src/modules/Makefile.am
+index 23abff9..b50c641 100644
+--- a/src/modules/Makefile.am
++++ b/src/modules/Makefile.am
+@@ -187,6 +187,10 @@ if USE_MODULE_XKBSWITCH
+ include Makefile_xkbswitch.am
+ endif
+ 
++if USE_MODULE_TPGEST
++include Makefile_tpgest.am
++endif
++
+ if USE_MODULE_TILING
+ include Makefile_tiling.am
+ endif
+diff --git a/src/modules/Makefile_tpgest.am b/src/modules/Makefile_tpgest.am
+new file mode 100644
+index 0000000..883475b
+--- /dev/null
++++ b/src/modules/Makefile_tpgest.am
+@@ -0,0 +1,18 @@
++tpgestdir = $(MDIR)/tpgest
++tpgest_DATA = tpgest/module.desktop
++
++EXTRA_DIST += $(tpgest_DATA)
++
++tpgestpkgdir = $(MDIR)/tpgest/$(MODULE_ARCH)
++tpgestpkg_LTLIBRARIES = tpgest/module.la
++
++tpgest_module_la_CFLAGS = $(AM_CFLAGS) @TPGEST_CFLAGS@ @TPGEST_LOGIND_CFLAGS@
++tpgest_module_la_LIBADD = @TPGEST_LIBS@ @TPGEST_LOGIND_LIBS@ -lm
++tpgest_module_la_SOURCES = tpgest/e_mod_main.c \
++			   tpgest/e_mod_main.h \
++			   tpgest/e_mod_config.c \
++			   tpgest/e_mod_gesture.c
++
++.PHONY: tpgest install-tpgest
++tpgest: $(tpgestpkg_LTLIBRARIES) $(tpgest_DATA)
++install-tpgest: install-tpgestDATA install-tpgestpkgLTLIBRARIES
+diff --git a/src/modules/tasks/e_mod_main.c b/src/modules/tasks/e_mod_main.c
+index a34a059..c21e48c 100644
+--- a/src/modules/tasks/e_mod_main.c
++++ b/src/modules/tasks/e_mod_main.c
+@@ -58,6 +58,8 @@ struct _Tasks_Item
+    } drag;
+ };
+ 
++static void         _tasks_act_next(E_Object *obj, const char *params);
++static void         _tasks_act_prev(E_Object *obj, const char *params);
+ static Tasks       *_tasks_new(Evas *evas, E_Zone *zone, const char *id);
+ static void         _tasks_free(Tasks *tasks);
+ static void         _tasks_refill(Tasks *tasks);
+@@ -141,6 +143,25 @@ e_modapi_init(E_Module *m)
+ #define D conf_edd
+    E_CONFIG_LIST(D, T, items, conf_item_edd);
+ 
++   {
++      E_Action *act;
++
++      act = e_action_add("tasks_focus_next");
++      if (act)
++        {
++           act->func.go = _tasks_act_next;
++           e_action_predef_name_set(N_("Tasks"), N_("Focus Next Window (taskbar order)"),
++                                    "tasks_focus_next", NULL, NULL, 0);
++        }
++      act = e_action_add("tasks_focus_prev");
++      if (act)
++        {
++           act->func.go = _tasks_act_prev;
++           e_action_predef_name_set(N_("Tasks"), N_("Focus Previous Window (taskbar order)"),
++                                    "tasks_focus_prev", NULL, NULL, 0);
++        }
++   }
++
+    tasks_config = e_config_domain_load("module.tasks", conf_edd);
+    if (!tasks_config)
+      {
+@@ -204,9 +225,70 @@ e_modapi_init(E_Module *m)
+    return m;
+ }
+ 
++/* Focus the next/previous window in the order of the Tasks gadget icons. */
++static void
++_tasks_focus_step(int dir)
++{
++   E_Zone *zone = e_util_zone_current_get(e_manager_current_get());
++   Eina_List *l, *vis = NULL;
++   Tasks *tasks, *use = NULL;
++   Tasks_Item *item;
++   E_Border *cur = e_border_focused_get(), *bd;
++   int n, idx = -1, i = 0;
++
++   if ((!tasks_config) || (!zone)) return;
++   EINA_LIST_FOREACH(tasks_config->tasks, l, tasks)
++     if ((tasks->zone == zone) && (tasks->items))
++       {
++          use = tasks;
++          break;
++       }
++   if (!use) return;
++
++   /* minimized windows are skipped */
++   EINA_LIST_FOREACH(use->items, l, item)
++     if ((item->border) && (!item->border->iconic))
++       vis = eina_list_append(vis, item->border);
++   n = eina_list_count(vis);
++   if (n == 0) return;
++
++   EINA_LIST_FOREACH(vis, l, bd)
++     {
++        if (bd == cur) idx = i;
++        i++;
++     }
++   if (idx < 0) idx = (dir > 0) ? -1 : n;
++   idx = (((idx + dir) % n) + n) % n;
++   bd = eina_list_nth(vis, idx);
++   eina_list_free(vis);
++   if ((!bd) || (bd == cur)) return;
++
++   if ((!bd->sticky) && (use->config) && (use->config->show_all))
++     e_desk_show(bd->desk);
++   e_border_raise(bd);
++   e_border_focus_set(bd, 1, 1);
++}
++
++static void
++_tasks_act_next(E_Object *obj __UNUSED__, const char *params __UNUSED__)
++{
++   _tasks_focus_step(1);
++}
++
++static void
++_tasks_act_prev(E_Object *obj __UNUSED__, const char *params __UNUSED__)
++{
++   _tasks_focus_step(-1);
++}
++
+ EAPI int
+ e_modapi_shutdown(E_Module *m __UNUSED__)
+ {
++   e_action_predef_name_del("Tasks", "Focus Next Window (taskbar order)");
++   e_action_predef_name_del("Tasks", "Focus Previous Window (taskbar order)");
++   e_action_del("tasks_focus_next");
++   e_action_del("tasks_focus_prev");
++
+    Ecore_Event_Handler *eh;
+    Tasks *tasks;
+    Config_Item *cfg;
+diff --git a/src/modules/tpgest/e_mod_config.c b/src/modules/tpgest/e_mod_config.c
+new file mode 100644
+index 0000000..bde3045
+--- /dev/null
++++ b/src/modules/tpgest/e_mod_config.c
+@@ -0,0 +1,381 @@
++#include "e.h"
++#include "e_mod_main.h"
++
++typedef struct
++{
++   int         type, fingers, dir;
++   const char *label;
++} Gesture_Def;
++
++/* action list groups */
++enum { GRP_DESKTOP, GRP_TASKBAR, GRP_WINDOW, GRP_MENU, GRP_OTHER, GRP_LAST };
++
++static const char *_group_names[GRP_LAST] =
++{
++   N_("Desktop"), N_("Taskbar order"), N_("Window"), N_("Menus"), N_("Other")
++};
++
++typedef struct
++{
++   const char *label;
++   const char *action;
++   const char *params;
++   int         group;
++} Preset;
++
++static const Gesture_Def _gestures[] =
++{
++   { TPG_SWIPE, 3, TPG_UP,    N_("Swipe up") },
++   { TPG_SWIPE, 3, TPG_DOWN,  N_("Swipe down") },
++   { TPG_SWIPE, 3, TPG_LEFT,  N_("Swipe left") },
++   { TPG_SWIPE, 3, TPG_RIGHT, N_("Swipe right") },
++   { TPG_PINCH, 3, TPG_IN,    N_("Pinch in") },
++   { TPG_PINCH, 3, TPG_OUT,   N_("Pinch out") },
++   { TPG_SWIPE, 4, TPG_UP,    N_("Swipe up") },
++   { TPG_SWIPE, 4, TPG_DOWN,  N_("Swipe down") },
++   { TPG_SWIPE, 4, TPG_LEFT,  N_("Swipe left") },
++   { TPG_SWIPE, 4, TPG_RIGHT, N_("Swipe right") },
++   { TPG_PINCH, 4, TPG_IN,    N_("Pinch in") },
++   { TPG_PINCH, 4, TPG_OUT,   N_("Pinch out") }
++};
++#define N_GESTURES ((int)(sizeof(_gestures) / sizeof(_gestures[0])))
++
++static const Preset _presets[] =
++{
++   { N_("None"),                       "",                        NULL,   GRP_OTHER },
++   { N_("Previous Desktop"),           "desk_flip_by",            "-1 0", GRP_DESKTOP },
++   { N_("Next Desktop"),               "desk_flip_by",            "1 0",  GRP_DESKTOP },
++   { N_("Desktop Above"),              "desk_flip_by",            "0 -1", GRP_DESKTOP },
++   { N_("Desktop Below"),              "desk_flip_by",            "0 1",  GRP_DESKTOP },
++   { N_("Show Desktop"),               "desk_deskshow_toggle",    NULL,   GRP_DESKTOP },
++   { N_("Main Menu"),                  "menu_show",               "main", GRP_MENU },
++   { N_("Window List"),                "winlist",                 "next", GRP_MENU },
++   { N_("Toggle Maximize"),            "window_maximized_toggle", NULL,   GRP_WINDOW },
++   { N_("Minimize"),                   "window_iconic_toggle",    NULL,   GRP_WINDOW },
++   { N_("Close"),                      "window_close",            NULL,   GRP_WINDOW },
++   { N_("Send to Previous Desktop"),   "window_desk_move_by",     "-1 0", GRP_WINDOW },
++   { N_("Send to Next Desktop"),       "window_desk_move_by",     "1 0",  GRP_WINDOW },
++   { N_("Focus Right Window"),         "tasks_focus_next",        NULL,   GRP_TASKBAR },
++   { N_("Focus Left Window"),          "tasks_focus_prev",        NULL,   GRP_TASKBAR },
++   { N_("Run Command"),                "exec",                    NULL,   GRP_OTHER }
++};
++#define N_PRESETS ((int)(sizeof(_presets) / sizeof(_presets[0])))
++#define PRESET_EXEC (N_PRESETS - 1)
++
++#define PRESET_KEEP N_PRESETS   /* binding that matches no preset: left alone */
++
++typedef struct _Cb_Item Cb_Item;
++
++struct _Cb_Item
++{
++   E_Config_Dialog_Data *cfdata;
++   int                   val;
++};
++
++struct _E_Config_Dialog_Data
++{
++   int          enabled;
++   int          swipe_threshold, pinch_threshold;
++   int          sel[N_GESTURES];      /* preset per gesture */
++   char        *cmd[N_GESTURES];      /* command for "Run Command" */
++   int          row[N_GESTURES];      /* row of each gesture in the list */
++   int          arow[N_PRESETS + 1];  /* row of each action in its list */
++   int          cur;                  /* gesture being edited */
++   char        *cmd_edit;             /* entry buffer */
++   Evas_Object *o_gest, *o_act, *o_cmd;
++   Cb_Item      gitem[N_GESTURES];
++   Cb_Item      aitem[N_PRESETS + 1];
++};
++
++static void        *_create_data(E_Config_Dialog *cfd);
++static void         _free_data(E_Config_Dialog *cfd, E_Config_Dialog_Data *cfdata);
++static Evas_Object *_basic_create(E_Config_Dialog *cfd, Evas *evas, E_Config_Dialog_Data *cfdata);
++static int          _basic_apply(E_Config_Dialog *cfd, E_Config_Dialog_Data *cfdata);
++static int          _basic_check(E_Config_Dialog *cfd, E_Config_Dialog_Data *cfdata);
++
++E_Config_Dialog *
++e_int_config_tpgest(E_Container *con, const char *params __UNUSED__)
++{
++   E_Config_Dialog_View *v;
++
++   if (e_config_dialog_find("E", "keyboard_and_mouse/touchpad_gestures"))
++     return NULL;
++   v = E_NEW(E_Config_Dialog_View, 1);
++   if (!v) return NULL;
++   v->create_cfdata = _create_data;
++   v->free_cfdata = _free_data;
++   v->basic.create_widgets = _basic_create;
++   v->basic.apply_cfdata = _basic_apply;
++   v->basic.check_changed = _basic_check;
++   return e_config_dialog_new(con, _("Touchpad Gesture Settings"), "E",
++                              "keyboard_and_mouse/touchpad_gestures",
++                              "preferences-desktop-mouse", 0, v, NULL);
++}
++
++static int
++_preset_find(const char *action, const char *params)
++{
++   int i;
++
++   if ((!action) || (!action[0])) return 0;
++   if (!strcmp(action, "exec")) return PRESET_EXEC;
++   for (i = 1; i < PRESET_EXEC; i++)
++     {
++        if (strcmp(_presets[i].action, action)) continue;
++        if ((!_presets[i].params) && ((!params) || (!params[0]))) return i;
++        if ((_presets[i].params) && (params) &&
++            (!strcmp(_presets[i].params, params))) return i;
++     }
++   return PRESET_KEEP;
++}
++
++static void
++_fill_data(E_Config_Dialog_Data *cfdata)
++{
++   int i;
++
++   cfdata->enabled = tpg_config->enabled;
++   cfdata->swipe_threshold = tpg_config->swipe_threshold;
++   cfdata->pinch_threshold = tpg_config->pinch_threshold;
++   for (i = 0; i < N_GESTURES; i++)
++     {
++        Tpg_Binding *b = tpg_binding_find(_gestures[i].type,
++                                          _gestures[i].fingers,
++                                          _gestures[i].dir);
++        const char *a = b ? b->action : NULL;
++        const char *p = b ? b->params : NULL;
++
++        cfdata->sel[i] = _preset_find(a, p);
++        cfdata->cmd[i] = strdup((cfdata->sel[i] == PRESET_EXEC) && p ? p : "");
++        cfdata->gitem[i].cfdata = cfdata;
++        cfdata->gitem[i].val = i;
++     }
++   for (i = 0; i <= N_PRESETS; i++)
++     {
++        cfdata->aitem[i].cfdata = cfdata;
++        cfdata->aitem[i].val = i;
++     }
++}
++
++static void *
++_create_data(E_Config_Dialog *cfd __UNUSED__)
++{
++   E_Config_Dialog_Data *cfdata = E_NEW(E_Config_Dialog_Data, 1);
++
++   if (!cfdata) return NULL;
++   _fill_data(cfdata);
++   return cfdata;
++}
++
++static void
++_free_data(E_Config_Dialog *cfd __UNUSED__, E_Config_Dialog_Data *cfdata)
++{
++   int i;
++
++   for (i = 0; i < N_GESTURES; i++)
++     {
++        free(cfdata->cmd[i]);
++     }
++   free(cfdata->cmd_edit);
++   E_FREE(cfdata);
++}
++
++static void
++_sync_cmd(E_Config_Dialog_Data *cfdata)
++{
++   int i = cfdata->cur;
++
++   e_widget_disabled_set(cfdata->o_cmd, cfdata->sel[i] != PRESET_EXEC);
++}
++
++/* a gesture was picked on the left: show its action on the right */
++static void
++_cb_gesture(void *data)
++{
++   Cb_Item *it = data;
++   E_Config_Dialog_Data *cfdata = it->cfdata;
++
++   cfdata->cur = it->val;
++   e_widget_ilist_selected_set(cfdata->o_act, cfdata->arow[cfdata->sel[it->val]]);
++   e_widget_entry_text_set(cfdata->o_cmd, cfdata->cmd[it->val]);
++   _sync_cmd(cfdata);
++}
++
++/* an action was picked on the right: assign it to the chosen gesture */
++static void
++_cb_action(void *data)
++{
++   Cb_Item *it = data;
++   E_Config_Dialog_Data *cfdata = it->cfdata;
++
++   cfdata->sel[cfdata->cur] = it->val;
++   _sync_cmd(cfdata);
++}
++
++static void
++_cb_cmd(void *data, void *data2 __UNUSED__)
++{
++   E_Config_Dialog_Data *cfdata = data;
++   int i = cfdata->cur;
++
++   free(cfdata->cmd[i]);
++   cfdata->cmd[i] = strdup(cfdata->cmd_edit ? cfdata->cmd_edit : "");
++}
++
++static Evas_Object *
++_basic_create(E_Config_Dialog *cfd __UNUSED__, Evas *evas, E_Config_Dialog_Data *cfdata)
++{
++   Evas_Object *ol, *ot, *of, *ow;
++   int i, p, g, row, fingers = 0;
++
++   ol = e_widget_list_add(evas, 0, 0);
++   ow = e_widget_check_add(evas, _("Enable touchpad gestures"), &(cfdata->enabled));
++   e_widget_list_object_append(ol, ow, 1, 0, 0.0);
++
++   ot = e_widget_table_add(evas, 0);
++
++   /* left: the gestures, grouped by finger count */
++   of = e_widget_framelist_add(evas, _("Gestures"), 0);
++   cfdata->o_gest = e_widget_ilist_add(evas, 0, 0, NULL);
++   e_widget_ilist_freeze(cfdata->o_gest);
++   row = 0;
++   for (i = 0; i < N_GESTURES; i++)
++     {
++        if (_gestures[i].fingers != fingers)
++          {
++             fingers = _gestures[i].fingers;
++             e_widget_ilist_header_append(cfdata->o_gest, NULL,
++                                          (fingers == 3) ? _("3 Fingers") : _("4 Fingers"));
++             row++;
++          }
++        e_widget_ilist_append(cfdata->o_gest, NULL, _(_gestures[i].label), _cb_gesture,
++                              &(cfdata->gitem[i]), NULL);
++        cfdata->row[i] = row++;
++     }
++   e_widget_ilist_go(cfdata->o_gest);
++   e_widget_ilist_thaw(cfdata->o_gest);
++   e_widget_size_min_set(cfdata->o_gest, 420, 360);
++   e_widget_framelist_object_append(of, cfdata->o_gest);
++   e_widget_table_object_append(ot, of, 0, 0, 1, 2, 1, 1, 1, 1);
++
++   /* right: the actions, grouped like Moksha's own binding dialogs */
++   of = e_widget_framelist_add(evas, _("Action"), 0);
++   cfdata->o_act = e_widget_ilist_add(evas, 0, 0, NULL);
++   e_widget_ilist_freeze(cfdata->o_act);
++   row = 0;
++   for (g = 0; g < GRP_LAST; g++)
++     {
++        Eina_Bool head = EINA_FALSE;
++
++        for (p = 0; p < N_PRESETS; p++)
++          {
++             if (_presets[p].group != g) continue;
++             if (!head)
++               {
++                  e_widget_ilist_header_append(cfdata->o_act, NULL, _(_group_names[g]));
++                  row++;
++                  head = EINA_TRUE;
++               }
++             e_widget_ilist_append(cfdata->o_act, NULL, _(_presets[p].label),
++                                   _cb_action, &(cfdata->aitem[p]), NULL);
++             cfdata->arow[p] = row++;
++          }
++     }
++   e_widget_ilist_append(cfdata->o_act, NULL, _("Custom (leave unchanged)"),
++                         _cb_action, &(cfdata->aitem[PRESET_KEEP]), NULL);
++   cfdata->arow[PRESET_KEEP] = row++;
++   e_widget_ilist_go(cfdata->o_act);
++   e_widget_ilist_thaw(cfdata->o_act);
++   e_widget_size_min_set(cfdata->o_act, 420, 270);
++   e_widget_framelist_object_append(of, cfdata->o_act);
++   e_widget_table_object_append(ot, of, 1, 0, 1, 1, 1, 1, 1, 1);
++
++   of = e_widget_framelist_add(evas, _("Action Params"), 0);
++   cfdata->o_cmd = e_widget_entry_add(evas, &(cfdata->cmd_edit), _cb_cmd,
++                                      cfdata, NULL);
++   e_widget_size_min_set(cfdata->o_cmd, 420, 28);
++   e_widget_framelist_object_append(of, cfdata->o_cmd);
++   ow = e_widget_label_add(evas, _("Command to run (only for \"Run Command\")"));
++   e_widget_framelist_object_append(of, ow);
++   e_widget_table_object_append(ot, of, 1, 1, 1, 1, 1, 0, 1, 0);
++
++   e_widget_list_object_append(ol, ot, 1, 1, 0.5);
++
++   /* sensitivity, side by side */
++   of = e_widget_framelist_add(evas, _("Sensitivity"), 0);
++   ow = e_widget_label_add(evas, _("Swipe distance"));
++   e_widget_framelist_object_append(of, ow);
++   ow = e_widget_slider_add(evas, 1, 0, _("%1.0f units"), 5, 400, 1, 0,
++                            NULL, &(cfdata->swipe_threshold), 300);
++   e_widget_framelist_object_append(of, ow);
++   ow = e_widget_label_add(evas, _("Pinch size change"));
++   e_widget_framelist_object_append(of, ow);
++   ow = e_widget_slider_add(evas, 1, 0, _("%1.0f %%"), 1, 200, 1, 0,
++                            NULL, &(cfdata->pinch_threshold), 300);
++   e_widget_framelist_object_append(of, ow);
++   e_widget_list_object_append(ol, of, 1, 0, 0.5);
++
++   e_widget_ilist_selected_set(cfdata->o_gest, cfdata->row[0]);
++   return ol;
++}
++
++static int
++_basic_check(E_Config_Dialog *cfd __UNUSED__, E_Config_Dialog_Data *cfdata)
++{
++   int i;
++
++   if ((cfdata->enabled != tpg_config->enabled) ||
++       (cfdata->swipe_threshold != tpg_config->swipe_threshold) ||
++       (cfdata->pinch_threshold != tpg_config->pinch_threshold))
++     return 1;
++   for (i = 0; i < N_GESTURES; i++)
++     {
++        Tpg_Binding *b = tpg_binding_find(_gestures[i].type, _gestures[i].fingers,
++                                          _gestures[i].dir);
++        int cur = b ? _preset_find(b->action, b->params) : 0;
++
++        if (cfdata->sel[i] != cur) return 1;
++        if ((cur == PRESET_EXEC) &&
++            strcmp(cfdata->cmd[i], (b && b->params) ? b->params : ""))
++          return 1;
++     }
++   return 0;
++}
++
++static int
++_basic_apply(E_Config_Dialog *cfd __UNUSED__, E_Config_Dialog_Data *cfdata)
++{
++   int i;
++
++   tpg_config->enabled = cfdata->enabled;
++   tpg_config->swipe_threshold = cfdata->swipe_threshold;
++   tpg_config->pinch_threshold = cfdata->pinch_threshold;
++
++   for (i = 0; i < N_GESTURES; i++)
++     {
++        int s = cfdata->sel[i];
++
++        if (s == PRESET_KEEP) continue;
++        if (s == PRESET_EXEC)
++          tpg_binding_set(_gestures[i].type, _gestures[i].fingers,
++                          _gestures[i].dir, "exec", cfdata->cmd[i]);
++        else
++          tpg_binding_set(_gestures[i].type, _gestures[i].fingers,
++                          _gestures[i].dir, _presets[s].action,
++                          _presets[s].params);
++     }
++
++   tpg_config_save();
++
++   if (tpg_config->enabled)
++     {
++        if (!tpg_gesture_running() && !tpg_gesture_start())
++          e_util_dialog_show(_("Touchpad Gestures"),
++                             _("No accessible touchpad was found.<br>"
++                               "Make sure your user can read /dev/input "
++                               "(for example by joining the 'input' group)."));
++     }
++   else
++     tpg_gesture_stop();
++   return 1;
++}
+diff --git a/src/modules/tpgest/e_mod_gesture.c b/src/modules/tpgest/e_mod_gesture.c
+new file mode 100644
+index 0000000..5a30be3
+--- /dev/null
++++ b/src/modules/tpgest/e_mod_gesture.c
+@@ -0,0 +1,270 @@
++/* Touchpad gesture engine, derived from tpgestd (n3ptune-plan3t/tpgestd).
++ * The libinput fd is watched by the main loop and gestures call Moksha
++ * actions directly. */
++#include "e.h"
++#include "e_mod_main.h"
++#include <libinput.h>
++#include <libudev.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <errno.h>
++#include <math.h>
++#ifdef HAVE_TPGEST_LOGIND
++# include <systemd/sd-login.h>
++#endif
++
++static struct udev *_udev = NULL;
++static struct libinput *_li = NULL;
++static Ecore_Fd_Handler *_fdh = NULL;
++static char *_sid = NULL;
++
++/* A swipe is judged like a flick: distance + velocity * horizon, so a short
++ * quick flick counts and a slow drift does not. */
++#define TPG_FLICK_HORIZON 0.12    /* s of "coasting" added to the distance */
++#define TPG_VEL_ALPHA     0.4     /* velocity smoothing (EMA) */
++#define TPG_MIN_TRAVEL    8.0     /* units: ignore touches that barely moved */
++#define TPG_STALE_US      100000  /* paused this long before lifting: no flick */
++
++static double _acc_dx = 0.0, _acc_dy = 0.0, _scale = 1.0;
++static double _vx = 0.0, _vy = 0.0;   /* smoothed velocity, units/s */
++static uint64_t _last_us = 0;
++static int _fingers = 0;
++
++static int
++_open_restricted(const char *path, int flags, void *data __UNUSED__)
++{
++   int fd = open(path, flags | O_CLOEXEC);
++   return (fd < 0) ? -errno : fd;
++}
++
++static void
++_close_restricted(int fd, void *data __UNUSED__)
++{
++   close(fd);
++}
++
++static const struct libinput_interface _iface =
++{
++   _open_restricted,
++   _close_restricted
++};
++
++/* Events come straight from /dev/input, so they keep arriving while another
++ * session (e.g. a Wayland compositor on another VT) is in front. Only act
++ * when our own login session is the active one. */
++static Eina_Bool
++_session_active(void)
++{
++#ifdef HAVE_TPGEST_LOGIND
++   if (_sid) return (sd_session_is_active(_sid) != 0);
++#endif
++   return EINA_TRUE;
++}
++
++static void
++_dispatch(int type, int fingers, int dir)
++{
++   Tpg_Binding *b;
++   E_Action *act;
++
++   if (!_session_active()) return;
++   b = tpg_binding_find(type, fingers, dir);
++   if ((!b) || (!b->action) || (!b->action[0])) return;
++   act = e_action_find(b->action);
++   if ((!act) || (!act->func.go)) return;
++   act->func.go(E_OBJECT(e_util_zone_current_get(e_manager_current_get())),
++                b->params);
++}
++
++/* Direction of a finished swipe, or -1 if it was not one. Travel past the
++ * threshold always counts. A short, quick flick also counts, but momentum
++ * only ever adds to the travel: it never cancels or reverses a swipe. */
++static int
++_swipe_direction(double dx, double dy, double vx, double vy, Eina_Bool fresh,
++                 double th)
++{
++   double ax = fabs(dx), ay = fabs(dy), px = dx, py = dy;
++
++   if (ax > ay) { if (ax > th) return (dx > 0) ? TPG_RIGHT : TPG_LEFT; }
++   else if (ay > th) return (dy > 0) ? TPG_DOWN : TPG_UP;
++
++   if ((!fresh) || ((ax <= TPG_MIN_TRAVEL) && (ay <= TPG_MIN_TRAVEL)))
++     return -1;
++   if (vx * dx > 0.0) px += vx * TPG_FLICK_HORIZON;
++   if (vy * dy > 0.0) py += vy * TPG_FLICK_HORIZON;
++   if ((fabs(px) > fabs(py)) && (fabs(px) > th))
++     return (px > 0) ? TPG_RIGHT : TPG_LEFT;
++   if (fabs(py) > th) return (py > 0) ? TPG_DOWN : TPG_UP;
++   return -1;
++}
++
++static void
++_handle_swipe(struct libinput_event *ev, enum libinput_event_type t)
++{
++   struct libinput_event_gesture *g = libinput_event_get_gesture_event(ev);
++
++   uint64_t now = libinput_event_gesture_get_time_usec(g);
++
++   if (t == LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN)
++     {
++        _acc_dx = _acc_dy = 0.0;
++        _vx = _vy = 0.0;
++        _last_us = now;
++        _fingers = libinput_event_gesture_get_finger_count(g);
++     }
++   else if (t == LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE)
++     {
++        double dx = libinput_event_gesture_get_dx_unaccelerated(g);
++        double dy = libinput_event_gesture_get_dy_unaccelerated(g);
++
++        _acc_dx += dx;
++        _acc_dy += dy;
++        if (now > _last_us)
++          {
++             double dt = (double)(now - _last_us) / 1000000.0;
++
++             if (dt > 0.0005)
++               {
++                  _vx += ((dx / dt) - _vx) * TPG_VEL_ALPHA;
++                  _vy += ((dy / dt) - _vy) * TPG_VEL_ALPHA;
++               }
++          }
++        _last_us = now;
++     }
++   else if (t == LIBINPUT_EVENT_GESTURE_SWIPE_END)
++     {
++        if ((_fingers == 3) || (_fingers == 4))
++          {
++             int dir = _swipe_direction(_acc_dx, _acc_dy, _vx, _vy,
++                                        (now - _last_us <= TPG_STALE_US),
++                                        (double)tpg_config->swipe_threshold);
++
++             if (dir >= 0) _dispatch(TPG_SWIPE, _fingers, dir);
++          }
++        _fingers = 0;
++     }
++}
++
++static void
++_handle_pinch(struct libinput_event *ev, enum libinput_event_type t)
++{
++   struct libinput_event_gesture *g = libinput_event_get_gesture_event(ev);
++
++   if (t == LIBINPUT_EVENT_GESTURE_PINCH_BEGIN)
++     {
++        _scale = 1.0;
++        _fingers = libinput_event_gesture_get_finger_count(g);
++     }
++   else if (t == LIBINPUT_EVENT_GESTURE_PINCH_UPDATE)
++     {
++        _scale = libinput_event_gesture_get_scale(g);
++     }
++   else if (t == LIBINPUT_EVENT_GESTURE_PINCH_END)
++     {
++        if ((_fingers == 3) || (_fingers == 4))
++          {
++             double delta = _scale - 1.0;
++
++             if (fabs(delta) > ((double)tpg_config->pinch_threshold / 100.0))
++               _dispatch(TPG_PINCH, _fingers, (delta > 0) ? TPG_OUT : TPG_IN);
++          }
++        _fingers = 0;
++     }
++}
++
++static Eina_Bool
++_cb_fd(void *data __UNUSED__, Ecore_Fd_Handler *fdh __UNUSED__)
++{
++   struct libinput_event *ev;
++
++   if (!_li) return ECORE_CALLBACK_CANCEL;
++   libinput_dispatch(_li);
++   while ((ev = libinput_get_event(_li)))
++     {
++        enum libinput_event_type t = libinput_event_get_type(ev);
++
++        switch (t)
++          {
++           case LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN:
++           case LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE:
++           case LIBINPUT_EVENT_GESTURE_SWIPE_END:
++             _handle_swipe(ev, t);
++             break;
++           case LIBINPUT_EVENT_GESTURE_PINCH_BEGIN:
++           case LIBINPUT_EVENT_GESTURE_PINCH_UPDATE:
++           case LIBINPUT_EVENT_GESTURE_PINCH_END:
++             _handle_pinch(ev, t);
++             break;
++           default:
++             break;
++          }
++        libinput_event_destroy(ev);
++     }
++   return ECORE_CALLBACK_RENEW;
++}
++
++Eina_Bool
++tpg_gesture_running(void)
++{
++   return (_li != NULL);
++}
++
++void
++tpg_gesture_stop(void)
++{
++   if (_fdh) ecore_main_fd_handler_del(_fdh);
++   _fdh = NULL;
++   if (_li) libinput_unref(_li);
++   _li = NULL;
++   if (_udev) udev_unref(_udev);
++   _udev = NULL;
++   _fingers = 0;
++   free(_sid);
++   _sid = NULL;
++}
++
++Eina_Bool
++tpg_gesture_start(void)
++{
++   struct libinput_event *ev;
++   int devices = 0;
++
++   if (_li) return EINA_TRUE;
++
++#ifdef HAVE_TPGEST_LOGIND
++   if (sd_pid_get_session(getpid(), &_sid) < 0) _sid = NULL;
++#endif
++   _udev = udev_new();
++   if (!_udev) return EINA_FALSE;
++   _li = libinput_udev_create_context(&_iface, NULL, _udev);
++   if (!_li) goto fail;
++   if (libinput_udev_assign_seat(_li, "seat0") != 0) goto fail;
++
++   libinput_dispatch(_li);
++   while ((ev = libinput_get_event(_li)))
++     {
++        if (libinput_event_get_type(ev) == LIBINPUT_EVENT_DEVICE_ADDED)
++          {
++             struct libinput_device *dev = libinput_event_get_device(ev);
++
++             if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_GESTURE))
++               devices++;
++          }
++        libinput_event_destroy(ev);
++     }
++   if (devices == 0)
++     {
++        fprintf(stderr, "tpgest: no accessible touchpad found "
++                        "(permissions? try adding yourself to the 'input' group)\n");
++        goto fail;
++     }
++
++   _fdh = ecore_main_fd_handler_add(libinput_get_fd(_li), ECORE_FD_READ,
++                                    _cb_fd, NULL, NULL, NULL);
++   if (!_fdh) goto fail;
++   return EINA_TRUE;
++
++fail:
++   tpg_gesture_stop();
++   return EINA_FALSE;
++}
+diff --git a/src/modules/tpgest/e_mod_main.c b/src/modules/tpgest/e_mod_main.c
+new file mode 100644
+index 0000000..0d7adc4
+--- /dev/null
++++ b/src/modules/tpgest/e_mod_main.c
+@@ -0,0 +1,171 @@
++#include "e.h"
++#include "e_mod_main.h"
++
++EAPI E_Module_Api e_modapi = { E_MODULE_API_VERSION, "Touchpad Gestures" };
++
++Config *tpg_config = NULL;
++static E_Config_DD *conf_edd = NULL;
++static E_Config_DD *bind_edd = NULL;
++
++Tpg_Binding *
++tpg_binding_find(int type, int fingers, int dir)
++{
++   Eina_List *l;
++   Tpg_Binding *b;
++
++   if (!tpg_config) return NULL;
++   EINA_LIST_FOREACH(tpg_config->bindings, l, b)
++     if ((b->type == type) && (b->fingers == fingers) && (b->dir == dir))
++       return b;
++   return NULL;
++}
++
++void
++tpg_binding_set(int type, int fingers, int dir, const char *action, const char *params)
++{
++   Tpg_Binding *b;
++
++   if (!tpg_config) return;
++   b = tpg_binding_find(type, fingers, dir);
++   if (!b)
++     {
++        b = E_NEW(Tpg_Binding, 1);
++        if (!b) return;
++        b->type = type;
++        b->fingers = fingers;
++        b->dir = dir;
++        tpg_config->bindings = eina_list_append(tpg_config->bindings, b);
++     }
++   eina_stringshare_replace(&b->action, action ? action : "");
++   eina_stringshare_replace(&b->params, (params && params[0]) ? params : NULL);
++}
++
++void
++tpg_config_save(void)
++{
++   if (!conf_edd || !tpg_config) return;
++   e_config_domain_save("module.tpgest", conf_edd, tpg_config);
++}
++
++#define TPG_CONFIG_VERSION 2
++
++static void
++_reset_bindings(void)
++{
++   Tpg_Binding *b;
++
++   EINA_LIST_FREE(tpg_config->bindings, b)
++     {
++        eina_stringshare_del(b->action);
++        eina_stringshare_del(b->params);
++        E_FREE(b);
++     }
++}
++
++static void
++_defaults(void)
++{
++   tpg_binding_set(TPG_SWIPE, 3, TPG_LEFT,  "tasks_focus_next", NULL);
++   tpg_binding_set(TPG_SWIPE, 3, TPG_RIGHT, "tasks_focus_prev", NULL);
++   tpg_binding_set(TPG_SWIPE, 3, TPG_UP,    "menu_show", "main");
++   tpg_binding_set(TPG_SWIPE, 3, TPG_DOWN,  "desk_deskshow_toggle", NULL);
++   /* natural scrolling: swiping left reveals the desktop on the right */
++   tpg_binding_set(TPG_SWIPE, 4, TPG_LEFT,  "desk_flip_by", "1 0");
++   tpg_binding_set(TPG_SWIPE, 4, TPG_RIGHT, "desk_flip_by", "-1 0");
++   tpg_binding_set(TPG_SWIPE, 4, TPG_UP,    "window_maximized_toggle", NULL);
++   tpg_binding_set(TPG_SWIPE, 4, TPG_DOWN,  "window_iconic_toggle", NULL);
++}
++
++EAPI void *
++e_modapi_init(E_Module *m)
++{
++   bind_edd = E_CONFIG_DD_NEW("Tpgest_Binding", Tpg_Binding);
++#undef T
++#undef D
++#define T Tpg_Binding
++#define D bind_edd
++   E_CONFIG_VAL(D, T, type, INT);
++   E_CONFIG_VAL(D, T, fingers, INT);
++   E_CONFIG_VAL(D, T, dir, INT);
++   E_CONFIG_VAL(D, T, action, STR);
++   E_CONFIG_VAL(D, T, params, STR);
++
++   conf_edd = E_CONFIG_DD_NEW("Tpgest_Config", Config);
++#undef T
++#undef D
++#define T Config
++#define D conf_edd
++   E_CONFIG_VAL(D, T, version, INT);
++   E_CONFIG_VAL(D, T, enabled, INT);
++   E_CONFIG_VAL(D, T, swipe_threshold, INT);
++   E_CONFIG_VAL(D, T, pinch_threshold, INT);
++   E_CONFIG_LIST(D, T, bindings, bind_edd);
++#undef T
++#undef D
++
++   tpg_config = e_config_domain_load("module.tpgest", conf_edd);
++   if (!tpg_config)
++     {
++        tpg_config = E_NEW(Config, 1);
++        tpg_config->version = TPG_CONFIG_VERSION;
++        tpg_config->enabled = 1;
++        tpg_config->swipe_threshold = 40;
++        tpg_config->pinch_threshold = 15;
++        _defaults();
++     }
++   if (tpg_config->version < TPG_CONFIG_VERSION)
++     {
++        _reset_bindings();
++        _defaults();
++        tpg_config->version = TPG_CONFIG_VERSION;
++        tpg_config_save();
++     }
++   E_CONFIG_LIMIT(tpg_config->swipe_threshold, 5, 400);
++   E_CONFIG_LIMIT(tpg_config->pinch_threshold, 1, 200);
++
++   e_configure_registry_category_add("keyboard_and_mouse", 40, _("Input"),
++                                     NULL, "preferences-behavior");
++   e_configure_registry_item_add("keyboard_and_mouse/touchpad_gestures", 60,
++                                 _("Touchpad Gestures"), NULL,
++                                 "preferences-desktop-mouse",
++                                 e_int_config_tpgest);
++
++   if (tpg_config->enabled) tpg_gesture_start();
++
++   e_module_delayed_set(m, 1);
++   return m;
++}
++
++EAPI int
++e_modapi_shutdown(E_Module *m __UNUSED__)
++{
++   E_Config_Dialog *cfd;
++   Tpg_Binding *b;
++
++   while ((cfd = e_config_dialog_get("E", "keyboard_and_mouse/touchpad_gestures")))
++     e_object_del(E_OBJECT(cfd));
++   e_configure_registry_item_del("keyboard_and_mouse/touchpad_gestures");
++
++   tpg_gesture_stop();
++
++   if (tpg_config)
++     {
++        EINA_LIST_FREE(tpg_config->bindings, b)
++          {
++             eina_stringshare_del(b->action);
++             eina_stringshare_del(b->params);
++             E_FREE(b);
++          }
++        E_FREE(tpg_config);
++     }
++   E_CONFIG_DD_FREE(conf_edd);
++   E_CONFIG_DD_FREE(bind_edd);
++   return 1;
++}
++
++EAPI int
++e_modapi_save(E_Module *m __UNUSED__)
++{
++   tpg_config_save();
++   return 1;
++}
+diff --git a/src/modules/tpgest/e_mod_main.h b/src/modules/tpgest/e_mod_main.h
+new file mode 100644
+index 0000000..acbeed2
+--- /dev/null
++++ b/src/modules/tpgest/e_mod_main.h
+@@ -0,0 +1,57 @@
++#ifndef E_MOD_MAIN_H
++#define E_MOD_MAIN_H
++
++#define TPG_SWIPE 0
++#define TPG_PINCH 1
++
++/* swipe directions */
++#define TPG_UP    0
++#define TPG_DOWN  1
++#define TPG_LEFT  2
++#define TPG_RIGHT 3
++/* pinch directions */
++#define TPG_IN    0
++#define TPG_OUT   1
++
++typedef struct _Tpg_Binding Tpg_Binding;
++typedef struct _Config      Config;
++
++struct _Tpg_Binding
++{
++   int         type;      /* TPG_SWIPE / TPG_PINCH */
++   int         fingers;   /* 3 or 4 */
++   int         dir;
++   const char *action;    /* Moksha action name (e.g. desk_flip_by); "" = none */
++   const char *params;    /* action params, may be NULL */
++};
++
++struct _Config
++{
++   int        version;          /* bumped when the default bindings change */
++   int        enabled;
++   int        swipe_threshold;  /* accumulated unaccelerated px */
++   int        pinch_threshold;  /* percent scale change */
++   Eina_List *bindings;         /* Tpg_Binding * */
++};
++
++extern Config *tpg_config;
++
++EAPI extern E_Module_Api e_modapi;
++EAPI void *e_modapi_init(E_Module *m);
++EAPI int   e_modapi_shutdown(E_Module *m);
++EAPI int   e_modapi_save(E_Module *m);
++
++/* bindings */
++Tpg_Binding     *tpg_binding_find(int type, int fingers, int dir);
++void             tpg_binding_set(int type, int fingers, int dir, const char *action, const char *params);
++void             tpg_config_save(void);
++
++/* gesture engine (e_mod_gesture.c) */
++Eina_Bool        tpg_gesture_start(void);
++void             tpg_gesture_stop(void);
++Eina_Bool        tpg_gesture_running(void);
++
++/* settings dialog (e_mod_config.c) */
++E_Config_Dialog *e_int_config_tpgest(E_Container *con, const char *params);
++
++#endif
+diff --git a/src/modules/tpgest/module.desktop.in b/src/modules/tpgest/module.desktop.in
+new file mode 100644
+index 0000000..2fefa4e
+--- /dev/null
++++ b/src/modules/tpgest/module.desktop.in
+@@ -0,0 +1,6 @@
++[Desktop Entry]
++Type=Link
++Name=Touchpad Gestures
++Comment=Native 3/4-finger touchpad swipe and pinch gestures (libinput), based on tpgestd.
++Icon=preferences-desktop-mouse
++X-Enlightenment-ModuleType=system

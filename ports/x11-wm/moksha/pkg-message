@@ -1,0 +1,15 @@
+[
+{ type: install
+  message: <<EOM
+Touchpad gestures (tpgest) read /dev/input/event*. Add your user to a group
+that may read them, e.g. in /etc/devfs.rules:
+
+  [input_rules=10]
+  add path 'input/event*' mode 0660 group operator
+
+then set devfs_system_ruleset="input_rules" in /etc/rc.conf and
+`service devfs restart`. Also run the dbus and seatd/polkit services.
+Start with: exec enlightenment_start   (from ~/.xinitrc)
+EOM
+}
+]

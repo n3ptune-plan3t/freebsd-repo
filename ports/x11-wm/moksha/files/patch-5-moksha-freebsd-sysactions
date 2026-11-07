@@ -1,0 +1,35 @@
+diff --git a/configure.ac b/configure.ac
+index c1a1faa35..ada2748b4 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -969,9 +969,13 @@ SUSPEND=""
+ HIBERNATE=""
+ case "$host_os" in
+    freebsd*|pcbsd*)
+-      SUSPEND="acpiconf -s3"
++      # FreeBSD: "shutdown -h" only halts, -p also powers the machine off
++      HALT="/sbin/shutdown -p now"
++      REBOOT="/sbin/shutdown -r now"
++      # zzz(8) suspends via the sysctl-selected ACPI sleep state
++      SUSPEND="/usr/sbin/zzz"
+       AC_MSG_NOTICE([use suspend method: $SUSPEND])
+-      HIBERNATE="acpiconf -s4"
++      HIBERNATE="/usr/sbin/acpiconf -s 4"
+       AC_MSG_NOTICE([use hibernate method: $HIBERNATE])
+       ;;
+    *)
+diff --git a/data/etc/sysactions.conf.in b/data/etc/sysactions.conf.in
+index 4838adbe9..5c8e00325 100644
+--- a/data/etc/sysactions.conf.in
++++ b/data/etc/sysactions.conf.in
+@@ -47,8 +47,8 @@ action:   halt      @HALT@
+ action:   reboot    @REBOOT@
+ action:   suspend   @SUSPEND@
+ action:   hibernate @HIBERNATE@
+-action:   /bin/mount /bin/mount
+-action:   /bin/umount /bin/umount
++action:   /sbin/mount /sbin/mount
++action:   /sbin/umount /sbin/umount
+ action:   /usr/bin/eject /usr/bin/eject
+ 
+ # on FreeBSD use this instead of the above.

@@ -1,0 +1,101 @@
+diff --git a/src/bin/e_config.h b/src/bin/e_config.h
+index 69528aaff..0c6e202b8 100644
+--- a/src/bin/e_config.h
++++ b/src/bin/e_config.h
+@@ -41 +41 @@ typedef struct _E_Event_Config_Icon_Theme   E_Event_Config_Icon_Theme;
+-#define E_CONFIG_FILE_GENERATION 23
++#define E_CONFIG_FILE_GENERATION 24 /* do not lower: profiles saved by earlier builds use it and Moksha resets settings that are newer than itself */
+diff --git a/src/modules/conf_window_manipulation/e_int_config_window_display.c b/src/modules/conf_window_manipulation/e_int_config_window_display.c
+index 3d4051854..3394e0fe0 100644
+--- a/src/modules/conf_window_manipulation/e_int_config_window_display.c
++++ b/src/modules/conf_window_manipulation/e_int_config_window_display.c
+@@ -22,0 +23 @@ struct _E_Config_Dialog_Data
++   int        middle_close;   /* titlebar middle click: 0 default, 1 graceful close */
+@@ -24,0 +26,71 @@ struct _E_Config_Dialog_Data
++#define TB_SOURCE "e.event.titlebar"
++
++static Eina_Bool
++_is_middle_binding(E_Config_Binding_Signal *eb)
++{
++   return (eb->context == E_BINDING_CONTEXT_WINDOW) && (eb->source) &&
++          (eb->signal) && (!strcmp(eb->source, TB_SOURCE)) &&
++          ((!strcmp(eb->signal, "mouse,down,2")) ||
++           (!strcmp(eb->signal, "mouse,clicked,2")));
++}
++
++/* 1 if middle click on a titlebar currently closes the window */
++static int
++_middle_close_get(void)
++{
++   Eina_List *l;
++   E_Config_Binding_Signal *eb;
++
++   EINA_LIST_FOREACH(e_config->signal_bindings, l, eb)
++     if ((_is_middle_binding(eb)) && (eb->action) &&
++         (!strcmp(eb->action, "window_close")))
++       return 1;
++   return 0;
++}
++
++/* replace the titlebar middle click binding: Moksha's default (shade) or a
++ * graceful close (WM_DELETE_WINDOW, so applications can ask to save first) */
++static void
++_middle_close_set(int close)
++{
++   Eina_List *l, *ll;
++   E_Config_Binding_Signal *eb;
++
++   EINA_LIST_FOREACH_SAFE(e_config->signal_bindings, l, ll, eb)
++     {
++        if (!_is_middle_binding(eb)) continue;
++        e_bindings_signal_del(eb->context, eb->signal, eb->source,
++                              eb->modifiers, eb->any_mod, eb->action,
++                              eb->params);
++        e_config->signal_bindings =
++          eina_list_remove_list(e_config->signal_bindings, l);
++        eina_stringshare_del(eb->signal);
++        eina_stringshare_del(eb->source);
++        eina_stringshare_del(eb->action);
++        eina_stringshare_del(eb->params);
++        E_FREE(eb);
++     }
++
++   eb = E_NEW(E_Config_Binding_Signal, 1);
++   if (!eb) return;
++   eb->context = E_BINDING_CONTEXT_WINDOW;
++   eb->source = eina_stringshare_add(TB_SOURCE);
++   eb->modifiers = E_BINDING_MODIFIER_NONE;
++   eb->any_mod = 1;
++   if (close)
++     {
++        /* on release, so a click that turns into a drag does nothing */
++        eb->signal = eina_stringshare_add("mouse,clicked,2");
++        eb->action = eina_stringshare_add("window_close");
++     }
++   else
++     {
++        eb->signal = eina_stringshare_add("mouse,down,2");
++        eb->action = eina_stringshare_add("window_shaded_toggle");
++        eb->params = eina_stringshare_add("up");
++     }
++   e_config->signal_bindings = eina_list_append(e_config->signal_bindings, eb);
++   e_bindings_signal_add(eb->context, eb->signal, eb->source, eb->modifiers,
++                         eb->any_mod, eb->action, eb->params);
++}
++
+@@ -60,0 +133 @@ _create_data(E_Config_Dialog *cfd __UNUSED__)
++   cfdata->middle_close = _middle_close_get();
+@@ -97,0 +171,2 @@ _basic_apply(E_Config_Dialog *cfd __UNUSED__, E_Config_Dialog_Data *cfdata)
++   if (cfdata->middle_close != _middle_close_get())
++     _middle_close_set(cfdata->middle_close);
+@@ -114,0 +190 @@ _basic_check_changed(E_Config_Dialog *cfd __UNUSED__, E_Config_Dialog_Data *cfda
++          (_middle_close_get() != cfdata->middle_close) ||
+@@ -136,0 +213,8 @@ _basic_create(E_Config_Dialog *cfd __UNUSED__, Evas *evas, E_Config_Dialog_Data
++   of = e_widget_framelist_add(evas, _("Titlebar Middle Click"), 0);
++   rg = e_widget_radio_group_new(&(cfdata->middle_close));
++   ow = e_widget_radio_add(evas, _("Default"), 0, rg);
++   e_widget_framelist_object_append(of, ow);
++   ow = e_widget_radio_add(evas, _("Gracefully Close Window"), 1, rg);
++   e_widget_framelist_object_append(of, ow);
++   e_widget_list_object_append(ol, of, 1, 1, 0.5);
++
