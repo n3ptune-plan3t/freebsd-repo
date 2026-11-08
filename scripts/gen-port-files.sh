@@ -24,7 +24,13 @@ while read -r origin; do
     for dep in $(make -C "$d" missing); do
       pkg install -y "$dep" >/dev/null 2>&1 || echo "no binary package for $dep, will build from source"
     done
-    make -C "$d" depends
+    # The binary packages above come from the pkg branch (e.g. quarterly), which can
+    # lag the pinned ports tree (gstreamer1-plugins 1.28.8 installed vs 1.28.9 in the
+    # tree). `make depends` then rebuilds the newer version from source and its
+    # install step aborts with "An older version ... is already installed".
+    # FORCE_PKG_REGISTER (ports(7)) lets it overwrite the old registration; this is a
+    # throwaway host and the real build happens later in poudriere's clean jail.
+    make -C "$d" FORCE_PKG_REGISTER=yes depends
     make -C "$d" clean stage
     make -C "$d" makeplist | grep -v -e '^===>' -e '^/!\\' > "$d/pkg-plist"
     # moksha's shutdown/reboot/suspend helper must be setuid root
